@@ -289,9 +289,11 @@ async def test_dropped_browser_connection_is_reopened(tmp_path, monkeypatch):
         return fresh
 
     monkeypatch.setattr(mod.CDPSession, "connect", connect)
-    assert await drv._browser_session() is fresh
+    assert (await drv.health())["ok"] is True
+    assert drv._browser is fresh
     assert drv._contexts == {"kept": "ctx-1"}  # contexts Chromium no longer has are dropped
-    assert await drv._browser_session() is fresh and drv._chromium.starts == 1
+    assert (await drv.health())["ok"] is True
+    assert drv._browser is fresh and drv._chromium.starts == 1
 
 
 async def test_unreachable_browser_fails_over_instead_of_crashing(tmp_path):

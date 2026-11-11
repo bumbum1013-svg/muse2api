@@ -156,6 +156,9 @@ class BrowserDriver(MuseDriver):
             return self._browser
 
     async def health(self) -> dict[str, Any]:
+        if self._chromium is not None and (self._browser is None or self._browser.closed):
+            with contextlib.suppress(UpstreamError):
+                await self._browser_session()
         ok = self._browser is not None and not self._browser.closed
         tabs = [t for ts in self._tabs.values() for t in ts]
         return {"driver": self.name, "ok": ok, "tabs": len(tabs),
@@ -299,6 +302,10 @@ class BrowserDriver(MuseDriver):
                 # Never hand Chromium a past expiry; it would drop the cookie silently.
                 "expires": exp if exp > floor else time.time() + 7 * 86400,
             }
+            if name.startswith("__Host-"):
+                # __Host- cookies must not carry a Domain attribute; Chromium rejects them.
+                params.pop("domain")
+                params["url"] = "https://muse.ai/"
             await session.send("Network.setCookie", params)
 
     @staticmethod
