@@ -16,10 +16,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import logging
+import shutil
+import tempfile
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -27,6 +31,7 @@ from websockets.exceptions import WebSocketException
 
 from ...accounts.model import Account
 from ...config import Settings
+from ...core.media import ext_for
 from ...core.prompt import followup_text
 from ...errors import (
     UpstreamAuthError,
@@ -82,6 +87,7 @@ class _Tab:
     stale: bool = False
     """Cookies were renewed; close this tab once it is idle."""
     closed: bool = False
+    temp_dirs: list[Path] = field(default_factory=list)
 
     @property
     def has_state(self) -> bool:
@@ -395,6 +401,9 @@ class BrowserDriver(MuseDriver):
     # ------------------------------------------------------------ input
     async def _attach(self, tab: _Tab, images: list[InputImage]) -> None:
         for idx, img in enumerate(images):
+            if img.kind != "image":
+                await self._attach_file_path(tab, img, idx)
+                continue
             ext = img.mime.split("/")[-1].replace("jpeg", "jpg")
             res = await tab.session.evaluate(
                 dom.attach_file(base64.b64encode(img.data).decode(), img.mime, f"input_{idx}.{ext}")
@@ -404,11 +413,30 @@ class BrowserDriver(MuseDriver):
         if images:
             await asyncio.sleep(1.0)
 
-    async def _send(self, tab: _Tab, prompt: str) -> None:
+    async def _attach_file_path(self, tab: _Tab, item: InputImage, idx: int) -> None:
+        """Videos and audio go through a temp file and DOM.setFileInputFiles: pushing tens of
+        MiB of base64 through Runtime.evaluate is slow and can exceed message limits."""
+        folder = Path(tempfile.mkdtemp(prefix="muse2api_up_"))
+        path = folder / f"input_{idx}{ext_for(item.mime)}"
+        path.write_bytes(item.data)
+        tab.temp_dirs.append(folder)
+        root = await tab.session.send("DOM.getDocument", {"depth": 0})
+        node = await tab.session.send("DOM.querySelector", {
+            "nodeId": root["root"]["nodeId"], "selector": dom.FILE_INPUT})
+        if not node.get("nodeId"):
+            raise UpstreamError(f"failed to attach {item.kind}: no file input")
+        await tab.session.send("DOM.setFileInputFiles", {"nodeId": node["nodeId"], "files": [str(path)]})
+
+    # Waiting for Send to become clickable also waits out the upload: the composer
+    # keeps Send disabled while a video or audio file is still uploading.
+    _SEND_WAIT = 5.0
+    _UPLOAD_SEND_WAIT = 180.0
+
+    async def _send(self, tab: _Tab, prompt: str, wait: float | None = None) -> None:
         res = await tab.session.evaluate(dom.fill_input(prompt))
         if not (res or {}).get("ok"):
             raise UpstreamError(f"cannot fill chat input: {(res or {}).get('err')}")
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + (wait or self._SEND_WAIT)
         while time.monotonic() < deadline:
             if await tab.session.evaluate(dom.CLICK_SEND) == "clicked":
                 return
@@ -448,7 +476,13 @@ class BrowserDriver(MuseDriver):
         await self._new_thread(tab)
         base = await self._state(tab)
         await self._attach(tab, images)
-        await self._send(tab, prompt)
+        uploading = any(i.kind != "image" for i in images)
+        try:
+            await self._send(tab, prompt, self._UPLOAD_SEND_WAIT if uploading else None)
+        finally:
+            for folder in tab.temp_dirs:
+                shutil.rmtree(folder, ignore_errors=True)
+            tab.temp_dirs.clear()
         return base
 
     async def _deny_approvals(self, tab: _Tab) -> None:
@@ -604,6 +638,53 @@ class BrowserDriver(MuseDriver):
         suffix = f" ({', '.join(hints)})" if hints else ""
         return f"{verb}{suffix}: {prompt}"
 
+    _VERTICAL = ("9:16", "9/16", "portrait", "720x1280", "1080x1920")
+    _LANDSCAPE = ("16:9", "16/9", "landscape", "1280x720", "1920x1080")
+
+    @classmethod
+    def _video_prompt(cls, prompt: str, size: str | None, duration: int | None,
+                      kinds: list[str], resolution: str | None = None) -> str:
+        """The muse.ai agent keeps earlier files in its workspace and reuses them unless told
+        not to, so every video prompt says which files to use. Attachments get labels
+        ([image1], [video1], [audio1]) in upload order that the user prompt can refer to.
+        A first image is the opening frame only when every reference is an image: with a
+        video or audio reference it made the model ignore that reference. Wording follows
+        github.com/czg86389-hub/muse2api (MIT)."""
+        seen: dict[str, int] = {}
+        labels = []
+        for i, kind in enumerate(kinds, 1):
+            seen[kind] = seen.get(kind, 0) + 1
+            labels.append(f"[{kind}{seen[kind]}] is attachment {i} ({kind})")
+        legend = "; ".join(labels)
+        if not kinds:
+            lead = ("Create a brand-new video from this text alone. Do not use any earlier image, "
+                    "video or file from this workspace or chat")
+        elif any(k != "image" for k in kinds):
+            lead = (f"Make a video from the files attached to this message only ({legend}). "
+                    "Never use earlier files; each attachment's role is as described below")
+        elif len(kinds) > 1:
+            lead = (f"Make a video from the {len(kinds)} images attached to this message only "
+                    f"({legend}). Unless the description says otherwise, the first image is the "
+                    "opening frame and the others guide subject, scene and style. Never use earlier images")
+        else:
+            lead = ("Make a video that starts from the image attached to this message as its first "
+                    "frame. Never use earlier images or any other picture")
+        shape = (size or "").lower()
+        specs = []
+        if any(k in shape for k in cls._VERTICAL):
+            specs.append("strictly vertical 9:16 full-screen portrait video, taller than wide, "
+                         "no black bars, never landscape")
+        elif any(k in shape for k in cls._LANDSCAPE):
+            specs.append("16:9 widescreen landscape video")
+        elif size:
+            specs.append(f"aspect ratio {size}")
+        if duration:
+            specs.append(f"exactly {duration} seconds long")
+        if resolution:
+            specs.append(f"resolution {resolution}")
+        spec = f" ({', '.join(specs)})" if specs else ""
+        return f"{lead}{spec}: {prompt}"
+
     # muse.ai posts a completion sentence ("Here's your video…") a few seconds
     # before the media attachment's blob src is ready, so a reply that is "text
     # only" right now may still be finalising. Keep waiting this long for the
@@ -640,7 +721,8 @@ class BrowserDriver(MuseDriver):
         return resent
 
     async def _wait_media(self, tab: _Tab, base: dict, kind: str, timeout: float,
-                          on_progress, cancel: asyncio.Event | None) -> dict:
+                          on_progress, cancel: asyncio.Event | None,
+                          ignore: set[str] | None = None) -> dict:
         base_atts = len(base.get("attachments", []))
         base_count = base.get("agentCount", 0)
         grace = self._MEDIA_GRACE.get(kind, 8.0)
@@ -664,7 +746,8 @@ class BrowserDriver(MuseDriver):
                 denied, text_done_at = True, None
                 continue
             new_atts = st.get("attachments", [])[base_atts:]
-            fresh = [a for a in new_atts if a.get("src") and a.get("kind") == kind]
+            fresh = [a for a in new_atts if a.get("src") and a.get("kind") == kind
+                     and a["src"] not in (ignore or ())]
             if fresh:
                 if (waited := time.monotonic() - started) > timeout:
                     log.info("%s arrived %.0fs past the %.0fs timeout", kind, waited - timeout, timeout)
@@ -769,8 +852,19 @@ class BrowserDriver(MuseDriver):
         tab = await self._checkout(account, prefer=lambda t: not t.has_state)
         try:
             base = await self._prepare(tab, prompt, images)
-            att = await self._wait_media(tab, base, kind, timeout, on_progress, cancel)
-            return await self._download(tab, att, kind)
+            uploaded = {hashlib.sha256(i.data).digest() for i in images if i.kind == kind}
+            ignore: set[str] = set()
+            deadline = time.monotonic() + timeout
+            while True:
+                att = await self._wait_media(tab, base, kind, max(1.0, deadline - time.monotonic()),
+                                             on_progress, cancel, ignore)
+                result = await self._download(tab, att, kind)
+                # An uploaded reference video shows up as an attachment of the same kind;
+                # never hand it back as the generated one.
+                if hashlib.sha256(result.data).digest() not in uploaded:
+                    return result
+                log.info("%s attachment is an uploaded reference; waiting for the generated one", kind)
+                ignore.add(att["src"])
         except CDPError as exc:
             await self._close_tab(tab)
             raise UpstreamError(f"browser error: {exc}") from exc
@@ -788,8 +882,9 @@ class BrowserDriver(MuseDriver):
         return results
 
     async def generate_video(self, account: Account, req: VideoRequest) -> MediaResult:
-        prompt = self._media_prompt(req.prompt, "video", req.size, req.duration)
-        images = [req.first_frame] if req.first_frame else []
+        images = req.uploads
+        prompt = self._video_prompt(req.prompt, req.size, req.duration,
+                                    [i.kind for i in images], req.resolution)
         return await self._generate(account, prompt, images, "video", req.timeout,
                                     req.on_progress, req.cancel)
 

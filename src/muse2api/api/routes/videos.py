@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from ...core.media import load_image_ref
+from ...core.media import MAX_REFERENCES, load_image_ref, load_media_refs
+from ...errors import InvalidRequest
 from ...core.models import resolve_model
 from ...drivers.base import InputImage, VideoRequest
 from ...errors import NotFound
@@ -37,11 +38,16 @@ async def create_video(body: VideoCreateRequest, request: Request,
     request.state.model = body.model or spec.id
     frame_ref = body.image or body.input_reference
     first_frame = InputImage(*(await load_image_ref(frame_ref))) if frame_ref else None
+    loaded = await load_media_refs([*body.images, *body.videos, *body.audios])
+    if first_frame and len(loaded) + 1 > MAX_REFERENCES:
+        raise InvalidRequest(f"at most {MAX_REFERENCES} reference files per request")
+    references = [InputImage(data, mime) for data, mime in loaded]
     base = public_base(request)
 
     async def runner(progress) -> dict:
         req = VideoRequest(prompt=body.prompt, model=spec.id, size=body.size,
                            duration=body.duration or body.seconds, first_frame=first_frame,
+                           references=references, resolution=body.resolution,
                            timeout=svc.settings.video_timeout, on_progress=progress)
         result = await svc.gateway.generate_video(req)
         name = svc.media.save(result.data, result.mime, prefix="vid")
@@ -54,6 +60,7 @@ async def create_video(body: VideoCreateRequest, request: Request,
     cost = svc.billing.video_cost(seconds)
     request_meta = {"model": spec.id, "prompt": body.prompt, "size": body.size,
                     "duration": seconds, "has_first_frame": bool(first_frame),
+                    "references": [r.kind for r in references], "resolution": body.resolution,
                     "cost_usd": usd(cost)}
     task_id = new_task_id()
     await svc.billing.reserve(request.state.key_id, cost, task_id,

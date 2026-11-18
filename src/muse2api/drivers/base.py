@@ -23,8 +23,15 @@ ProgressCallback = Callable[[int], None]
 
 @dataclass
 class InputImage:
+    """An uploaded file. Mostly images; video references may also carry video and audio."""
+
     data: bytes
     mime: str = "image/png"
+
+    @property
+    def kind(self) -> str:
+        head = self.mime.split("/", 1)[0]
+        return head if head in ("image", "video", "audio") else "document"
 
 
 @dataclass
@@ -60,9 +67,16 @@ class VideoRequest:
     size: str | None = None
     duration: int | None = None
     first_frame: InputImage | None = None
+    references: list[InputImage] = field(default_factory=list)
+    """Further images, videos and audio, uploaded in this order after ``first_frame``."""
+    resolution: str | None = None
     timeout: float = 600.0
     on_progress: ProgressCallback | None = None
     cancel: asyncio.Event | None = None
+
+    @property
+    def uploads(self) -> list[InputImage]:
+        return ([self.first_frame] if self.first_frame else []) + list(self.references)
 
 
 @dataclass
