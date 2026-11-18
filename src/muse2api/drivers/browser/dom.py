@@ -21,6 +21,8 @@ FILE_INPUT = 'input[type="file"]'
 LOGIN_HINTS = ("log in", "sign in", "create an account", "use another account")
 QUOTA_HINTS = ("out of credits", "usage limit", "limit reached", "token limit")
 STALL_HINTS = ("Still sending", "Connecting...")
+# Shown under a message the backend never acknowledged (the Stop button shows anyway).
+UNDELIVERED_HINTS = ("Still sending", "Delivery not confirmed")
 # The whole reply muse.ai shows when its agent errors out mid-turn.
 GLITCH_HINTS = ("ran into a problem while responding",)
 
@@ -73,6 +75,7 @@ CHAT_STATE = f"""(() => {{
   return {{ agentCount: bubbles.length, lastText: last,
             generating: !!document.querySelector({q(STOP_BUTTON)}),
             approval: !!document.querySelector({q(APPROVAL_CARD)}),
+            unsent: !!((document.querySelector({q(INPUT)}) || {{value: ''}}).value || '').trim(),
             attachments: atts, tail }};
 }})()"""
 

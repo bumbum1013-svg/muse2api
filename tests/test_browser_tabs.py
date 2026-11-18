@@ -326,3 +326,62 @@ async def test_chat_reply_that_is_only_the_agent_error_raises(driver, fast, monk
             got.append(delta)
     assert "".join(got) == oops["lastText"]  # streamed, but it ends as an error
     assert not tab.busy
+
+
+class _ClickSession(_ScriptedSession):
+    def __init__(self, states, after_click=None):
+        super().__init__(states)
+        self.clicks, self.after_click = 0, after_click
+
+    async def evaluate(self, expr, **kw):
+        from muse2api.drivers.browser import dom
+
+        if expr == dom.CLICK_SEND:
+            self.clicks += 1
+            if self.after_click:
+                self.states[:] = self.after_click
+            return "clicked"
+        return await super().evaluate(expr, **kw)
+
+
+WAITING = {"agentCount": 0, "lastText": "", "generating": True, "attachments": [], "tail": ""}
+
+
+async def test_unsent_prompt_is_sent_again_once(driver, fast, monkeypatch):
+    monkeypatch.setattr(BrowserDriver, "_RESEND_AFTER", 0.0)
+    session = _ClickSession([{**WAITING, "unsent": True}],
+                            after_click=[{**WAITING, "agentCount": 1, "attachments": [IMG]}])
+    tab = _Tab("a0", "ctx", "t", session)
+    att = await driver._wait_media(tab, {"agentCount": 0, "attachments": []}, "image", 30, None, None)
+    assert att == IMG and session.clicks == 1
+
+
+async def test_prompt_stuck_in_chat_box_fails_over(driver, fast, monkeypatch):
+    from muse2api.errors import UpstreamGlitch
+
+    monkeypatch.setattr(BrowserDriver, "_RESEND_AFTER", 0.0)
+    monkeypatch.setattr(BrowserDriver, "_UNSENT_FAIL_AFTER", 0.0)
+    session = _ClickSession([{**WAITING, "unsent": True}])
+    with pytest.raises(UpstreamGlitch, match="chat box") as err:
+        await driver._wait_media(_Tab("a0", "ctx", "t", session),
+                                 {"agentCount": 0, "attachments": []}, "image", 30, None, None)
+    assert err.value.retryable
+
+
+async def test_undelivered_prompt_fails_over(driver, fast, monkeypatch):
+    from muse2api.errors import UpstreamGlitch
+
+    monkeypatch.setattr(BrowserDriver, "_UNDELIVERED_AFTER", 0.0)
+    stuck = {**WAITING, "tail": "Generate an image: a cat\nDelivery not confirmed"}
+    with pytest.raises(UpstreamGlitch, match="delivered"):
+        await driver._wait_media(_media_tab([stuck]), {"agentCount": 0, "attachments": []},
+                                 "image", 30, None, None)
+
+
+async def test_delivery_checks_stop_once_the_agent_answers(driver, fast, monkeypatch):
+    monkeypatch.setattr(BrowserDriver, "_UNDELIVERED_AFTER", 0.0)
+    monkeypatch.setattr(BrowserDriver, "_UNSENT_FAIL_AFTER", 0.0)
+    answered = {**WAITING, "agentCount": 1, "unsent": True, "tail": "Still sending"}
+    tab = _media_tab([answered, answered, {**answered, "attachments": [IMG]}])
+    att = await driver._wait_media(tab, {"agentCount": 0, "attachments": []}, "image", 30, None, None)
+    assert att == IMG

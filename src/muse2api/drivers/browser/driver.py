@@ -618,15 +618,36 @@ class BrowserDriver(MuseDriver):
     # and waiting out the full overrun on it cost clients 10-25 minutes.
     _STALL_AFTER = {"video": 240.0, "image": 120.0}
 
+    # A message that never left the chat box, or that the backend never confirmed,
+    # used to be waited out to the stall/timeout (2-4 min). Seen by
+    # github.com/czg86389-hub/muse2api (MIT): click Send once more, then fail over.
+    _RESEND_AFTER = 25.0
+    _UNSENT_FAIL_AFTER = 60.0
+    _UNDELIVERED_AFTER = 45.0
+
+    async def _check_delivery(self, tab: _Tab, st: dict, since_send: float, resent: bool) -> bool:
+        """Called while the agent has not answered the last message; returns whether Send was re-clicked."""
+        if st.get("unsent"):
+            if since_send > self._UNSENT_FAIL_AFTER:
+                raise UpstreamGlitch(f"the prompt never left the chat box ({since_send:.0f}s)")
+            if since_send > self._RESEND_AFTER and not resent:
+                log.warning("prompt still in the chat box after %.0fs; clicking Send again", since_send)
+                await tab.session.evaluate(dom.CLICK_SEND)
+                return True
+        elif since_send > self._UNDELIVERED_AFTER and any(
+                h in st.get("tail", "") for h in dom.UNDELIVERED_HINTS):
+            raise UpstreamGlitch(f"muse.ai never confirmed the prompt was delivered ({since_send:.0f}s)")
+        return resent
+
     async def _wait_media(self, tab: _Tab, base: dict, kind: str, timeout: float,
                           on_progress, cancel: asyncio.Event | None) -> dict:
         base_atts = len(base.get("attachments", []))
         base_count = base.get("agentCount", 0)
         grace = self._MEDIA_GRACE.get(kind, 8.0)
         stall_after = self._STALL_AFTER.get(kind, 120.0)
-        started = changed_at = time.monotonic()
+        started = changed_at = sent_at = time.monotonic()
         text_done_at: float | None = None
-        denied = asked_to_attach = busy = loading = False
+        denied = asked_to_attach = busy = loading = resent = False
         last_sig: tuple | None = None
         while True:
             now = time.monotonic()
@@ -648,6 +669,8 @@ class BrowserDriver(MuseDriver):
                 if (waited := time.monotonic() - started) > timeout:
                     log.info("%s arrived %.0fs past the %.0fs timeout", kind, waited - timeout, timeout)
                 return fresh[-1]
+            if st.get("agentCount", 0) == base_count:
+                resent = await self._check_delivery(tab, st, time.monotonic() - sent_at, resent)
             sig = (st.get("agentCount", 0), st.get("lastText", ""),
                    tuple(a.get("tid") or "" for a in new_atts))
             if sig != last_sig:
@@ -686,6 +709,7 @@ class BrowserDriver(MuseDriver):
                                                             else ", as a single attachment."))
                         asked_to_attach, text_done_at = True, None
                         base_count = st.get("agentCount", 0)
+                        sent_at, resent = time.monotonic(), False
                         continue
                     # Last resort: media delivered as a link in the text bubble.
                     probe = await tab.session.evaluate(dom.LAST_BUBBLE_MEDIA) or {}
