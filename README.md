@@ -229,6 +229,23 @@ curl http://localhost:18610/v1/videos \
 curl http://localhost:18610/v1/videos/task_xxx -H "Authorization: Bearer $KEY"
 ```
 
+**Video from references**
+
+`image` is the first frame; `images`, `videos` (up to 120 s) and `audios` follow in that order (data URL,
+http(s) URL or base64; at most 10 files, 40 MiB each, 100 MiB in total). The prompt refers to them as
+`[image1]`, `[image2]`, `[video1]`, `[audio1]` in upload order. With only images, the first one opens the
+video; with a video or audio reference, each file does what the prompt says. Live results (18/11/2026):
+two images kept the character and took the second image's scene; an audio clip came back as the exact
+soundtrack with the mouth moving to it, at 1080x1920 when `resolution` asked for it; a reference video
+lent its camera move. Text-only prompts are told to ignore earlier workspace files, but the model still
+adds its own setting for vague subjects (a "red paper lantern" became a street of lanterns with Chinese
+characters), so name the setting.
+
+```bash
+curl http://localhost:18610/v1/videos -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"   -d '{"prompt":"[image1] says the words in [audio1], lips in sync","duration":5,"size":"9:16",
+       "resolution":"1080x1920","image":"data:image/png;base64,...","audios":["data:audio/wav;base64,..."]}'
+```
+
 **Import an account**
 
 ```bash
