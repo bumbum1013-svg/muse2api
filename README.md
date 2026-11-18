@@ -235,14 +235,16 @@ curl http://localhost:18610/v1/videos/task_xxx -H "Authorization: Bearer $KEY"
 http(s) URL or base64; at most 10 files, 40 MiB each, 100 MiB in total). The prompt refers to them as
 `[image1]`, `[image2]`, `[video1]`, `[audio1]` in upload order. With only images, the first one opens the
 video; with a video or audio reference, each file does what the prompt says. Live results (18/11/2026):
-two images kept the character and took the second image's scene; an audio clip came back as the exact
-soundtrack with the mouth moving to it, at 1080x1920 when `resolution` asked for it; a reference video
-lent its camera move. Text-only prompts are told to ignore earlier workspace files, but the model still
+two images kept the character and took the second image's scene; a reference video lent its camera move.
+An audio clip is NOT lip-synced: muse.ai animates a generic talking face and lays the uploaded file over it
+unchanged (Vietnamese speech, checked by ear), so use audio for mood or as a ready-made soundtrack, not for
+dialogue on camera. With audio the clip follows its length (11.4 s of audio gave 12 s at 1080x1920 when
+`resolution` asked for it); image-only clips stop at about 10 s. Text-only prompts are told to ignore earlier workspace files, but the model still
 adds its own setting for vague subjects (a "red paper lantern" became a street of lanterns with Chinese
 characters), so name the setting.
 
 ```bash
-curl http://localhost:18610/v1/videos -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"   -d '{"prompt":"[image1] says the words in [audio1], lips in sync","duration":5,"size":"9:16",
+curl http://localhost:18610/v1/videos -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"   -d '{"prompt":"[image1] tells a story while [audio1] plays","duration":5,"size":"9:16",
        "resolution":"1080x1920","image":"data:image/png;base64,...","audios":["data:audio/wav;base64,..."]}'
 ```
 
