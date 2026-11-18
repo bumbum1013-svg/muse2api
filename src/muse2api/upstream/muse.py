@@ -19,8 +19,25 @@ NEW_THREAD_URL = f"{SITE}/thread/new"
 SESSION_API = f"{SITE}/api/session"
 VM_WAKE_API = f"{SITE}/api/hatch/vm/wake"
 
-# Cookies that together make up a logged-in session.
-SESSION_COOKIES = ("hatch_sess", "hatch_vml", "hatch_native_auth_device")
+# The login itself (about 30 days). Everything else is optional: the session
+# endpoint re-issues the short-lived workspace cookie from this one.
+SESSION_COOKIES = ("hatch_sess",)
+
+# Workspace cookie that decides how long an account keeps working. It lives a
+# fixed ~48 h, using the site does not extend it, and only GET /api/session
+# re-issues it (observed by github.com/czg86389-hub/muse2api, MIT, and here:
+# an account left unrenewed from 08/11 was rejected for good by 18/11/2026).
+WORKSPACE_COOKIE = "hatch_vml"
+WORKSPACE_TTL = 48 * 3600
+
+
+def session_expires_at(cookie_expires: dict[str, int], renewed_at: float | None) -> float | None:
+    """When the workspace cookie runs out: its real expiry, else the last renewal
+    plus its fixed lifetime, else unknown."""
+    exp = cookie_expires.get(WORKSPACE_COOKIE) or 0
+    if exp > 0:
+        return float(exp)
+    return renewed_at + WORKSPACE_TTL if renewed_at else None
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "

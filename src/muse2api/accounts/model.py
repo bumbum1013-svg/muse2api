@@ -44,6 +44,12 @@ class Account(BaseModel):
         default_factory=dict, description="Driver-specific data such as quota snapshots or vm ids"
     )
 
+    def session_expires_at(self) -> float | None:
+        """When muse.ai stops accepting this account unless it is renewed first."""
+        from ..upstream.muse import session_expires_at
+
+        return session_expires_at(self.cookie_expires, self.meta.get("renewed_at"))
+
     def is_available(self, now: float | None = None) -> bool:
         if not self.enabled or self.status == AccountStatus.INVALID:
             return False

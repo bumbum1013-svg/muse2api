@@ -114,8 +114,19 @@ class Settings(BaseSettings):
     session_days: float = 30
 
     # --- keepalive (session renewal) ---
-    keepalive_enabled: bool = False
-    keepalive_interval: float = 6 * 3600
+    # The workspace cookie dies ~48 h after it was issued and use does not extend it,
+    # so renewal is on by default: check often, renew well before the end.
+    keepalive_enabled: bool = True
+    keepalive_check_interval: float = Field(default=15 * 60, description="Seconds between checks.")
+    keepalive_renew_before: float = Field(
+        default=36 * 3600, description="Renew when the session has less than this many seconds left.")
+    keepalive_interval: float = Field(
+        default=24 * 3600, description="Renew at least this often, whatever the expiry says.")
+    keepalive_notify_cmd: str = Field(
+        default="", description="Command run (message appended as the last argument) when an "
+        "account is rejected or about to expire; empty sends nothing.")
+    keepalive_warn_before: float = Field(
+        default=12 * 3600, description="Notify when a session has less than this left after a failed renewal.")
 
     @property
     def media_dir(self) -> Path:

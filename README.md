@@ -51,7 +51,7 @@ The project focuses on **clean engineering and easy collaboration**:
 | Admin API (account CRUD, renewal, reset, status) | ✅ Implemented | |
 | Mock driver | ✅ Implemented | Offline fake data |
 | Browser driver (Chromium + CDP) | 🧪 Needs live testing | Full chat, image and video flows are written |
-| Session renewal / keepalive | 🧪 Needs live testing | Plain HTTP, disabled by default |
+| Session renewal / keepalive | ✅ | Plain HTTP, on by default: renews each account before its ~48 h workspace cookie runs out |
 | Direct HTTP protocol driver | 🚧 Reserved | Returns 501 |
 | `/v1/images/edits` (reference images) | ✅ Implemented | Images are references for a new image; `mask` is rejected |
 | `/v1/responses` | 🚧 Reserved | Returns 501 |
@@ -146,7 +146,7 @@ docker compose up -d --build
 ### Use a real account (browser driver)
 
 1. Install Chromium or Chrome and set `MUSE2API_DRIVER=browser` in `.env`.
-2. Export the cookies from a browser that is logged in to muse.ai. At least `hatch_sess`, `hatch_gw`, `hatch_vml` and `hatch_native_auth_device` are required.
+2. Export the cookies from a browser that is logged in to muse.ai (open the chat page once so a workspace is assigned). Only `hatch_sess` (the login, ~30 days) is required; send every muse.ai cookie you have. The workspace cookie `hatch_vml` lives a fixed ~48 h and is re-issued by the session endpoint, which the keepalive calls before it runs out.
 3. Import the account through the Admin API (see the example below).
 
 ## API examples
@@ -234,7 +234,7 @@ curl http://localhost:18610/v1/videos/task_xxx -H "Authorization: Bearer $KEY"
 ```bash
 curl http://localhost:18610/admin/accounts \
   -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
-  -d '{"label":"acc1","cookies":{"hatch_sess":"...","hatch_gw":"...","hatch_vml":"...","hatch_native_auth_device":"..."}}'
+  -d '{"label":"acc1","cookies":{"hatch_sess":"...","hatch_vml":"..."},"cookie_expires":{"hatch_vml":1795000000}}'
 ```
 
 ### Endpoints
@@ -278,7 +278,9 @@ All settings come from environment variables (prefix `MUSE2API_`) or a `.env` fi
 | `MUSE2API_MAX_FAILOVER` | `2` | Maximum number of retries on another account |
 | `MUSE2API_ACCOUNT_MAX_CONCURRENCY` | `1` | Parallel requests per account (browser driver: one tab each); 4 works well |
 | `MUSE2API_CHROMIUM_PATH` | auto-detected | Path to the browser executable |
-| `MUSE2API_KEEPALIVE_ENABLED` | `false` | Periodically renew sessions in the background |
+| `MUSE2API_KEEPALIVE_ENABLED` | `true` | Renew sessions in the background (`/readyz` shows `accounts.session_expires_at`) |
+| `MUSE2API_KEEPALIVE_CHECK_INTERVAL` · `_RENEW_BEFORE` · `_INTERVAL` | `900` · `129600` · `86400` | Seconds between checks; renew when less than this is left; renew at least this often |
+| `MUSE2API_KEEPALIVE_NOTIFY_CMD` · `_WARN_BEFORE` | empty · `43200` | Command run with a message as its last argument when an account is rejected, or a renewal fails with less than `_WARN_BEFORE` seconds left |
 | `MUSE2API_MATTING_MODEL` | `birefnet-general` | Model for `background: "transparent"` (`birefnet-general-lite` is faster) |
 | `MUSE2API_BILLING_ENABLED` | `true` | Charge stored client keys' prepaid USD credit (402 when it runs out); admin, legacy and unlimited keys are free |
 | `MUSE2API_PRICE_IMAGE_USD` · `MUSE2API_PRICE_VIDEO_PER_SECOND_USD` | `0.015` · `0.006` | Price per image and per requested video second (`MUSE2API_VIDEO_DEFAULT_SECONDS`, `10`, when none is given) |

@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .accounts.keepalive import keepalive_loop
+from .accounts.keepalive import KeepalivePolicy, keepalive_loop
 from .api.middleware import NoStoreMiddleware, RequestLogMiddleware
 from .api.routes import build_router
 from .config import Settings, get_settings
@@ -60,9 +60,14 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
         housekeeping = asyncio.create_task(_housekeeping(services))
         keepalive = None
         if settings.keepalive_enabled and services.driver.capabilities.renew_session:
-            keepalive = asyncio.create_task(
-                keepalive_loop(services.pool, services.driver, settings.keepalive_interval)
+            policy = KeepalivePolicy(
+                check_interval=settings.keepalive_check_interval,
+                renew_before=settings.keepalive_renew_before,
+                max_age=settings.keepalive_interval,
+                warn_before=settings.keepalive_warn_before,
+                notify_cmd=settings.keepalive_notify_cmd,
             )
+            keepalive = asyncio.create_task(keepalive_loop(services.pool, services.driver, policy))
         log.info("muse2api %s ready (driver=%s)", __version__, services.driver.name)
         try:
             yield
